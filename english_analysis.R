@@ -172,6 +172,23 @@ eng <- eng %>%
 	select(-Comp.RESP, -Comp.RT, -Question, -Comp.ACC)
 
 
+##------------------------------------------------------------------
+## Check some basic stuff of the analysis:
+##------------------------------------------------------------------
+
+## How many men and women?
+
+eng %>% count(SubjGender) %>% mutate(n = n / 128)
+	# only four men, exclude?
+
+## Exclude the men and then exclude the gender column:
+
+eng <- eng %>%
+	filter(SubjGender == 'female') %>%
+		select(-SubjGender)
+		# so I am proceeding with 29 subjects
+
+
 
 ##------------------------------------------------------------------
 ## Accuracy analysis:
@@ -180,12 +197,16 @@ eng <- eng %>%
 ## What is accurate? For the powerful experiment:
 
 with(eng,
-	powerful_correct <<- Task == 'powerful' & Resp == 'up' & HierarchyCond == 'TopPower')
+	powerful_correct <<- Task == 'powerful' &
+		Resp == 'up' &
+		HierarchyCond == 'TopPower')
 with(eng,
 	powerful_correct <<- powerful_correct | Task == 'powerful' &
 		Resp == 'down' & HierarchyCond == 'BottomPower')
 with(eng,
-	powerless_correct <<- Task == 'powerless' & Resp == 'down' & HierarchyCond == 'TopPower')
+	powerless_correct <<- Task == 'powerless' &
+		Resp == 'down' &
+		HierarchyCond == 'TopPower')
 with(eng,
 	powerless_correct <<- powerless_correct | Task == 'powerless' &
 		Resp == 'up' & HierarchyCond == 'BottomPower')
@@ -198,200 +219,157 @@ eng$ACC <- powerful_correct | powerless_correct
 
 rm(powerful_correct, powerless_correct)
 
-## 
+## Analyze this:
 
+ACC.afex <- mixed(ACC ~ (HierarchyCond + GenderCond) * Task +
+	(1|Subj) + (1|ItemNo),
+	data = eng, family = 'binomial', method = 'LRT',
+	control = glmerControl(optimizer = 'bobyqa'))
+	# look at GenderCond:Task
 
+## Check inaccurates by subject:
 
+eng %>% group_by(Subj) %>%
+	summarize(ACC = mean(ACC)) %>% print(n = length(unique(eng$Subj)))
+	# all over 80 percent, no subjects to be excldued
 
+## How many inaccurates?
 
-eng %>% group_by(TopGender, Button, HierarchyCondition) %>%
-	summarise(ACC = round(mean(ACC), 2))
+(1 - (sum(eng$ACC) / nrow(eng))) * 100		# 5.7 %
 
+## Exclude inaccurates:
 
+eng <- eng %>%
+	filter(ACC == 1)
 
-xmdl.ACC <- mixed(ACC ~ HierarchyCondition * Button * ExperimentName +
-	(1 + Button + HierarchyCondition|SubID) +
-	(1 + Button + HierarchyCondition|PairName),
-	data = eng, method = 'LRT',
-	family = 'binomial')
 
-xmdl.RT <- mixed(LogRT ~ HierarchyCondition * Button * ExperimentName +
-	(1 + Button + HierarchyCondition|SubID) +
-	(1 + Button + HierarchyCondition|PairName),
-	data = eng, method = 'LRT')
 
+##------------------------------------------------------------------
+## RT cleaning:
+##------------------------------------------------------------------
 
-eng <- filter(eng, !incorrects)
+## Check RT distribution:
 
+ggplot(eng, aes(x = RT)) + geom_density(fill = 'steelblue')
+	## WOOOOOAH!
 
+## Check RT by subject:
 
-with(eng, table(Button, ExperimentName, HierarchyCondition))
+eng %>% group_by(Subj) %>%
+	summarize(RT = mean(RT)) %>% print(n = length(unique(eng$Subj)))
+	# some vast variation
 
+## Exclude responses over 5000:
 
+eng <- eng %>%
+	filter(RT < 5000)
 
+## Exclude within subjects:
 
-cond1 <- eng$GenderCondition == 'MaleTop' & eng$HierarchyCondition == 'TopPower'
-cond2 <- eng$GenderCondition == 'MaleBottom' & eng$HierarchyCondition == 'BottomPower'
-cond3 <- eng$GenderCondition == 'FemaleTop' & eng$HierarchyCondition == 'BottomPower'
-cond4 <- eng$GenderCondition == 'FemaleBottom' & eng$HierarchyCondition == 'TopPower'
+these_subs <- unique(eng$Subj)
+new_df <- c()
+sd_fac <- 2.5
+for (i in seq_along(these_subs)) {
+	this_df <- filter(eng, Subj == these_subs[i])
+	rts <- this_df$LogRT
+	UB <- mean(rts) + sd_fac * sd(rts)
+	LB <- mean(rts) - sd_fac * sd(rts)
+	this_df <- filter(this_df,
+		!(rts > UB | rts < LB))
+	new_df <- rbind(new_df, this_df)
+	}
+rm(i, LB, rts, these_subs, this_df, UB)
 
-met.cong1 <- eng$Button == 'up' & eng$HierarchyCondition == 'TopPower'
-met.cong2 <- eng$Button == 'down' & eng$HierarchyCondition == 'TopPower'
+## Compare:
 
+(1 - (nrow(new_df) / nrow(eng))) * 100
 
-cond <- cond1 | cond2 | cond3 | cond4
 
-eng$Congruency <- 'incongruent'
-eng[cond, ]$Congruency <- 'congruent'
 
-eng %>% print(width = Inf)
 
-ggplot(eng,
-	aes(x = c('HierarchyCondition', 'Button'), y = LogRT, fill = GenderCondition)) +
-	geom_boxplot() + facet_wrap(~ExperimentName)
+##------------------------------------------------------------------
+## Analyze results:
+##------------------------------------------------------------------
 
-ggplot(eng,
-	aes(x = Congruency, y = LogRT, fill = Button)) +
-	geom_boxplot()
+## Create a factor for hierarchy/gender congruency (male = powerful):
 
+with(new_df,
+	male_power <<- HierarchyCond == 'TopPower' & GenderCond == 'MaleTop')
+with(new_df,
+	male_power <<- male_power | (HierarchyCond == 'BottomPower' & GenderCond == 'FemaleTop'))
+new_df$GenderCongruent <- male_power
+rm(male_power)
 
-eng %>% group_by(Button) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
-eng %>% group_by(HierarchyCondition) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
-eng %>% group_by(ExperimentName) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
-eng %>% group_by(TopGender) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
+## Contrast code all predictors:
 
+new_df <- mutate(new_df,
+	GenderCond_c = as.factor(GenderCond),
+	Task_c = as.factor(Task),
+	HierarchyCond_c = as.factor(HierarchyCond),
+	Resp_c = as.factor(Resp),
+	GenderCongruent_c = as.factor(GenderCongruent))
+contrasts(new_df$GenderCond_c) <- contr.sum(2)
+contrasts(new_df$Task_c) <- contr.sum(2)
+contrasts(new_df$HierarchyCond_c) <- contr.sum(2)
+contrasts(new_df$Resp_c) <- contr.sum(2)
+contrasts(new_df$GenderCongruent_c) <- contr.sum(2)
 
-xmdl <- mixed(LogRT ~ TopGender +
-	(1 + TopGender|SubID) + (1 + TopGender|PairName),
-	data = eng, method = 'LRT')
+## Make a model of this:
 
-xmdl.power <- mixed(LogRT ~ TopGender + HierarchyCondition + 
-	(1 + TopGender + HierarchyCondition|SubID) +
-	(1 + TopGender + HierarchyCondition|PairName),
-	data = powerful, method = 'LRT')
-xmdl.powerless <- mixed(LogRT ~ TopGender + HierarchyCondition + 
-	(1 + TopGender + HierarchyCondition|SubID) +
-	(1 + TopGender + HierarchyCondition|PairName),
-	data = powerless, method = 'LRT')
+summary(xmdl <- lmer(LogRT ~ GenderCond_c + Task_c +
+	HierarchyCond_c + Task_c:HierarchyCond_c +
+	GenderCond_c:HierarchyCond_c + Task_c:GenderCond_c +
+	(1 + HierarchyCond_c + GenderCond_c|Subj) + (1 + Task_c|ItemNo),
+	# (1 + GenderCond_c + HierarchyCond_c|Subj) +
+	# (1 + GenderCond_c + Task_c + HierarchyCond_c|ItemNo),
+		data = new_df))
 
 
+summary(xmdl2 <- lmer(LogRT ~ GenderCongruent_c + Task_c +
+	Task_c:GenderCongruent_c +
+	(1 + GenderCongruent_c|Subj) + (1 + Task_c|ItemNo),
+	# (1 + GenderCond_c + HierarchyCond_c|Subj) +
+	# (1 + GenderCond_c + Task_c + HierarchyCond_c|ItemNo),
+		data = new_df))
 
-powerful <- filter(eng,
-	str_detect(ExperimentName, 'englishA'))
-powerless <- filter(eng,
-	str_detect(ExperimentName, 'englishB'))
+## Simple binary comparisons:
 
-eng %>% group_by(ExperimentName, HierarchyCondition) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
+new_df %>%
+	group_by(Task) %>%
+	summarise(RT = round(mean(RT), -1))
 
-eng %>% group_by(Button, Congruency) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))	
+new_df %>%
+	group_by(GenderCongruent) %>%
+	summarise(RT = round(mean(RT), -1))
 
+new_df %>%
+	group_by(HierarchyCond) %>%
+	summarise(RT = round(mean(RT), -1))
 
-xmdl.exp <- mixed(LogRT ~ Button * Congruency +
-	(1 + Congruency|SubID) + (1 + Button|PairName),
-	data = eng, method = 'LRT')
+new_df %>%
+	group_by(GenderCond) %>%
+	summarise(RT = round(mean(RT), -1))
 
+## Binary comparisons:
 
-xmdl.exp <- mixed(LogRT ~ ExperimentName * HierarchyCondition +
-	(1 + HierarchyCondition|SubID) + (1 + ExperimentName|PairName),
-	data = eng, method = 'LRT')
+new_df %>%
+	group_by(Task, HierarchyCond) %>%
+	summarise(RT = round(mean(RT), -1))
 
+new_df %>%
+	group_by(Task, Resp, HierarchyCond) %>%
+	summarise(RT = round(mean(RT), -1))
 
+new_df %>%
+	group_by(Task, GenderCond) %>%
+	summarise(RT = round(mean(RT), -1))
 
-powerful %>% group_by(Button, HierarchyCondition) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
-powerless %>% group_by(Button, TopGender) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
+new_df %>%
+	group_by(Task, Resp, GenderCond) %>%
+	summarise(RT = round(mean(RT), -1))
 
-eng %>% group_by(Button, ExperimentName) %>%
-	summarise(RT = round(mean(MainScreen.RT), 0))
-
-
-
-eng %>%
-	ggplot(aes(x = ExperimentName, y = LogRT, fill = Button)) +
-		geom_boxplot()
-	summarise(RT = round(mean(MainScreen.RT), 0))
-
-
-xmdl.exp <- mixed(LogRT ~ ExperimentName +
-	(1|SubID) + (1 + ExperimentName|PairName),
-	data = eng, method = 'LRT')
-
-
-
-
-eng %>% group_by(Congruency) %>%
-	summarise(RT = round(mean(MainScreen.RT), 2))
-
-
-
-eng %>% group_by(Button, HierarchyCondition) %>%
-	summarise(LogRT = mean(LogRT))
-
-eng %>% group_by(ExperimentName, Button, HierarchyCondition) %>%
-	summarise(RT = mean(MainScreen.RT))
-eng %>% group_by(Button, HierarchyCondition, ExperimentName) %>%
-	summarise(LogRT = mean(LogRT))
-	
-eng %>% group_by(Button, TopGender) %>%
-	summarise(RT = mean(MainScreen.RT))
-eng %>% group_by(Button, TopGender) %>%
-	summarise(LogRT = mean(LogRT))
-
-eng %>% group_by(Button, TopGender) %>%
-	summarise(RT = mean(MainScreen.RT))
-eng %>% group_by(Button, TopGender) %>%
-	summarise(LogRT = mean(LogRT))
-
-eng %>% group_by(Gender, Congruency) %>%
-	summarise(RT = mean(MainScreen.RT))
-
-eng %>% group_by(Congruency) %>%
-	summarise(RT = mean(MainScreen.RT))
-
-library(afex)
-xmdl.hier <- mixed(LogRT ~ HierarchyCondition +
-	(1 + HierarchyCondition|SubID) + (1 + HierarchyCondition|PairName),
-	data = eng, method = 'LRT')
-xmdl.cong <- mixed(LogRT ~ Congruency +
-	(1 + Congruency|SubID) + (1 + Congruency|PairName),
-	data = eng, method = 'LRT')
-xmdl.button <- mixed(LogRT ~ Button +
-	(1 + Button|SubID) + (1 + Button|PairName),
-	data = eng, method = 'LRT')
-
-
-
-summary(xmdl <- lmer(LogRT ~ 
-	ExperimentName:Button:HierarchyCondition + 
-	(1 + Button + HierarchyCondition|SubID) +
-	(1 + Button + HierarchyCondition|PairName),
-	data = eng))
-
-
-
-
-xmdl.button <- mixed(LogRT ~ Button + HierarchyCondition + ExperimentName +
-	Button:HierarchyCondition + 
-	(1 + Button + HierarchyCondition|SubID) +
-	(1 + Button + HierarchyCondition|PairName),
-	data = eng, method = 'LRT')
-
-
-
-xmdl.button2 <- mixed(LogRT ~ Button * HierarchyCondition * ExperimentName +
-	TopGender + TopGender:Button + TopGender:HierarchyCondition +
-	TopGender:HierarchyCondition:Button + 
-	(1 + Button + HierarchyCondition|SubID) +
-	(1 + Button + HierarchyCondition|PairName),
-	data = eng, method = 'LRT')
-
-
+new_df %>%
+	group_by(Task, GenderCongruent) %>%
+	summarise(RT = round(mean(RT), -1))
 
 
